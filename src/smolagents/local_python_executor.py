@@ -435,7 +435,6 @@ def set_value(target, value, state, static_tools, custom_tools):
         obj = evaluate_ast(target.value, state, static_tools, custom_tools)
         setattr(obj, target.attr, value)
 
-
 def evaluate_call(call, state, static_tools, custom_tools):
     if not (isinstance(call.func, ast.Attribute) or isinstance(call.func, ast.Name)):
         raise InterpreterError(f"This is not a correct function: {call.func}).")
@@ -445,21 +444,8 @@ def evaluate_call(call, state, static_tools, custom_tools):
         if not hasattr(obj, func_name):
             raise InterpreterError(f"Object {obj} has no attribute {func_name}")
         func = getattr(obj, func_name)
-
     elif isinstance(call.func, ast.Name):
         func_name = call.func.id
-        if func_name in state:
-            func = state[func_name]
-        elif func_name in static_tools:
-            func = static_tools[func_name]
-        elif func_name in custom_tools:
-            func = custom_tools[func_name]
-        elif func_name in ERRORS:
-            func = ERRORS[func_name]
-        else:
-            raise InterpreterError(
-                f"It is not permitted to evaluate other functions than the provided tools or functions defined in previous code (tried to execute {call.func.id})."
-            )
 
     args = []
     for arg in call.args:
@@ -1060,6 +1046,10 @@ class LocalPythonInterpreter:
 
     def __call__(self, code_action: str, additional_variables: Dict) -> Tuple[Any, str]:
         self.state.update(additional_variables)
+
+        import pprint
+        pprint.pprint(self.custom_tools)
+
         output = evaluate_python_code(
             code_action,
             static_tools=self.static_tools,

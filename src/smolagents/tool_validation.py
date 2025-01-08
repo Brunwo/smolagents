@@ -130,7 +130,14 @@ def validate_tool_attributes(cls, check_imports: bool = True) -> None:
     """
     errors = []
 
-    source = textwrap.dedent(inspect.getsource(cls))
+    source = None
+    try:
+      source = textwrap.dedent(inspect.getsource(cls))
+    except (TypeError, OSError):  # Catch cases where source is unavailable
+        source = getattr(cls, '__source__', None)
+
+    if source is None:
+        raise ValueError(f"Cannot retrieve source for class {cls}")
 
     tree = ast.parse(source)
 

@@ -526,6 +526,13 @@ class Tool:
         if not isinstance(tool_class.inputs, dict):
             tool_class.inputs = ast.literal_eval(tool_class.inputs)
 
+#keep original source in the tool, as inspect not working because of temp file
+        tool_class.__source__ = tool_code
+
+        #usefull ?
+        import sys
+        sys.modules["custom_tool"] = module
+
         return tool_class(**kwargs)
 
     @staticmethod
