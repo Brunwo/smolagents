@@ -496,6 +496,36 @@ class Tool:
                 f"{repo_id} does not appear to provide a valid configuration in `tool_config.json` or `config.json`."
             )
 
+        resolved_requirement_file = cached_file(
+            repo_id,
+            'requirements.txt',
+            token=token,
+            **hub_kwargs,
+            _raise_exceptions_for_gated_repo=False,
+            _raise_exceptions_for_missing_entries=False,
+            _raise_exceptions_for_connection_errors=False,
+        )
+        with open(resolved_requirement_file, encoding="utf-8") as reader:
+            for module in reader.readlines():
+                if module not in ["\n", "\r\n", "\n", "smolagents"]:
+
+                    # install dependencies  !!! very dangerous !!!!
+                    import importlib.util
+
+                    if importlib.util.find_spec(module) is not None:
+                        print(f"{module} is installed")
+                    else:
+                        import subprocess, sys
+                        print(f"{module} is not installed")
+                        try:
+                            # Install the module if not found
+                            subprocess.check_call([sys.executable, "-m", "pip", "install", module])
+                            print(f"{module} installed successfully")
+                        except subprocess.CalledProcessError as e:
+                            print(f"Failed to install {module}: {e}")
+
+
+
         with open(resolved_tool_file, encoding="utf-8") as reader:
             tool_code = "".join(reader.readlines())
 
@@ -507,6 +537,15 @@ class Tool:
                 f.write(tool_code)
 
             print("TOOLCODE:\n", tool_code)
+
+
+###
+
+
+
+            ####
+
+
 
             # Load module from file path
             spec = importlib.util.spec_from_file_location("custom_tool", module_path)
