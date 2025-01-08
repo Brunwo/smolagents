@@ -446,6 +446,20 @@ def evaluate_call(call, state, static_tools, custom_tools):
         func = getattr(obj, func_name)
     elif isinstance(call.func, ast.Name):
         func_name = call.func.id
+        func = (
+            state.get(func_name)
+            or static_tools.get(func_name)
+            or custom_tools.get(func_name)
+            or globals().get(func_name)  # Allow global functions
+            or locals().get(func_name)  # Allow local functions
+        )
+        if not func:
+            raise InterpreterError(f"Function {func_name} is not defined.")
+    # Ensure `func` is callable
+    if not callable(func):
+        raise InterpreterError(f"{func_name} is not callable.")
+    # return func
+
 
     args = []
     for arg in call.args:
