@@ -18,21 +18,28 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Dict, Optional
+
 from huggingface_hub import hf_hub_download, list_spaces
 
-from transformers.utils import is_offline_mode
-from transformers.models.whisper import (
-    WhisperProcessor,
-    WhisperForConditionalGeneration,
-)
+
+from transformers.utils import is_offline_mode, is_torch_available
 
 from .local_python_executor import (
     BASE_BUILTIN_MODULES,
     BASE_PYTHON_TOOLS,
     evaluate_python_code,
 )
-from .tools import TOOL_CONFIG_FILE, Tool, PipelineTool
+from .tools import TOOL_CONFIG_FILE, PipelineTool, Tool
 from .types import AgentAudio
+
+if is_torch_available():
+    from transformers.models.whisper import (
+        WhisperForConditionalGeneration,
+        WhisperProcessor,
+    )
+else:
+    WhisperForConditionalGeneration = object
+    WhisperProcessor = object
 
 
 @dataclass
@@ -105,18 +112,15 @@ class PythonInterpreterTool(Tool):
 
     def forward(self, code: str) -> str:
         state = {}
-        try:
-            output = str(
-                self.python_evaluator(
-                    code,
-                    state=state,
-                    static_tools=self.base_python_tools,
-                    authorized_imports=self.authorized_imports,
-                )
-            )
-            return f"Stdout:\n{state['print_outputs']}\nOutput: {output}"
-        except Exception as e:
-            return f"Error: {str(e)}"
+        output = str(
+            self.python_evaluator(
+                code,
+                state=state,
+                static_tools=self.base_python_tools,
+                authorized_imports=self.authorized_imports,
+            )[0]  # The second element is boolean is_final_answer
+        )
+        return f"Stdout:\n{state['print_outputs']}\nOutput: {output}"
 
 
 class FinalAnswerTool(Tool):
@@ -146,15 +150,15 @@ class UserInputTool(Tool):
 
 class DuckDuckGoSearchTool(Tool):
     name = "web_search"
-    description = """Performs a duckduckgo web search based on your query (think a Google search) then returns the top search results as a list of dict elements.
-    Each result has keys 'title', 'href' and 'body'."""
+    description = """Performs a duckduckgo web search based on your query (think a Google search) then returns the top search results."""
     inputs = {
         "query": {"type": "string", "description": "The search query to perform."}
     }
-    output_type = "any"
+    output_type = "string"
 
-    def __init__(self, **kwargs):
-        super().__init__(self, **kwargs)
+    def __init__(self, *args, max_results=10, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_results = max_results
         try:
             from duckduckgo_search import DDGS
         except ImportError:
@@ -164,7 +168,7 @@ class DuckDuckGoSearchTool(Tool):
         self.ddgs = DDGS()
 
     def forward(self, query: str) -> str:
-        results = self.ddgs.text(query, max_results=10)
+        results = self.ddgs.text(query, max_results=self.max_results)
         postprocessed_results = [
             f"[{result['title']}]({result['href']})\n{result['body']}"
             for result in results
@@ -270,9 +274,10 @@ class VisitWebpageTool(Tool):
 
     def forward(self, url: str) -> str:
         try:
-            from markdownify import markdownify
             import requests
+            from markdownify import markdownify
             from requests.exceptions import RequestException
+            from smolagents.utils import truncate_content
         except ImportError:
             raise ImportError(
                 "You must install packages `markdownify` and `requests` to run this tool: for instance run `pip install markdownify requests`."
@@ -288,7 +293,7 @@ class VisitWebpageTool(Tool):
             # Remove multiple line breaks
             markdown_content = re.sub(r"\n{3,}", "\n\n", markdown_content)
 
-            return markdown_content
+            return truncate_content(markdown_content, 10000)
 
         except RequestException as e:
             return f"Error fetching the webpage: {str(e)}"
@@ -321,6 +326,15 @@ class SpeechToTextTool(PipelineTool):
     def decode(self, outputs):
         return self.pre_processor.batch_decode(outputs, skip_special_tokens=True)[0]
 
+
+TOOL_MAPPING = {
+    tool_class.name: tool_class
+    for tool_class in [
+        PythonInterpreterTool,
+        DuckDuckGoSearchTool,
+        VisitWebpageTool,
+    ]
+}
 
 __all__ = [
     "PythonInterpreterTool",

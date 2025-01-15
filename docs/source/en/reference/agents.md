@@ -65,7 +65,7 @@ You could use any `model` callable for your agent, as long as:
 1. It follows the [messages format](./chat_templating) (`List[Dict[str, str]]`) for its input `messages`, and it returns a `str`.
 2. It stops generating outputs *before* the sequences passed in the argument `stop_sequences`
 
-For defining your LLM, you can make a `custom_model` method which accepts a list of [messages](./chat_templating) and returns text. This callable also needs to accept a `stop_sequences` argument that indicates when to stop generating.
+For defining your LLM, you can make a `custom_model` method which accepts a list of [messages](./chat_templating) and returns an object with a .content attribute containing the text. This callable also needs to accept a `stop_sequences` argument that indicates when to stop generating.
 
 ```python
 from huggingface_hub import login, InferenceClient
@@ -76,9 +76,9 @@ model_id = "meta-llama/Llama-3.3-70B-Instruct"
 
 client = InferenceClient(model=model_id)
 
-def custom_model(messages, stop_sequences=["Task"]) -> str:
+def custom_model(messages, stop_sequences=["Task"]):
     response = client.chat_completion(messages, stop=stop_sequences, max_tokens=1000)
-    answer = response.choices[0].message.content
+    answer = response.choices[0].message
     return answer
 ```
 
@@ -125,6 +125,7 @@ print(model(messages))
 ### LiteLLMModel
 
 The `LiteLLMModel` leverages [LiteLLM](https://www.litellm.ai/) to support 100+ LLMs from various providers.
+You can pass kwargs upon model initialization that will then be used whenever using the model, for instance below we pass `temperature`.
 
 ```python
 from smolagents import LiteLLMModel
@@ -135,8 +136,21 @@ messages = [
   {"role": "user", "content": "No need to help, take it easy."},
 ]
 
-model = LiteLLMModel("anthropic/claude-3-5-sonnet-latest")
-print(model(messages))
+model = LiteLLMModel("anthropic/claude-3-5-sonnet-latest", temperature=0.2)
+print(model(messages, max_tokens=10))
 ```
 
 [[autodoc]] LiteLLMModel
+
+### OpenAiServerModel
+
+This class lets you call any OpenAIServer compatible model.
+Here's how you can set it:
+```py
+model = OpenAIServerModel(
+    model_id="gpt-4o",
+    base_url="https://api.openai.com/v1",
+    api_key=os.environ["OPENAI_API_KEY"],
+)
+model=LiteLLMModel("gpt-4o", api_key=os.environ["OPENAI_API_KEY"])
+```

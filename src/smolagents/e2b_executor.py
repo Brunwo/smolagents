@@ -14,24 +14,25 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from dotenv import load_dotenv
-import textwrap
 import base64
 import pickle
+import textwrap
 from io import BytesIO
+from typing import Any, List, Tuple
+
+from dotenv import load_dotenv
+from e2b_code_interpreter import Sandbox
 from PIL import Image
 
-from e2b_code_interpreter import Sandbox
-from typing import List, Tuple, Any
 from .tool_validation import validate_tool_attributes
-from .utils import instance_to_source, BASE_BUILTIN_MODULES, console
 from .tools import Tool
+from .utils import BASE_BUILTIN_MODULES, instance_to_source
 
 load_dotenv()
 
 
 class E2BExecutor:
-    def __init__(self, additional_imports: List[str], tools: List[Tool]):
+    def __init__(self, additional_imports: List[str], tools: List[Tool], logger):
         self.custom_tools = {}
         self.sbx = Sandbox()  # "qywp2ctmu2q7jzprcf4j")
         # TODO: validate installing agents package or not
@@ -41,6 +42,7 @@ class E2BExecutor:
         #     timeout=300
         # )
         # print("Installation of agents package finished.")
+        self.logger = logger
         additional_imports = additional_imports + ["pickle5"]
         if len(additional_imports) > 0:
             execution = self.sbx.commands.run(
@@ -49,7 +51,7 @@ class E2BExecutor:
             if execution.error:
                 raise Exception(f"Error installing dependencies: {execution.error}")
             else:
-                console.print(f"Installation of {additional_imports} succeeded!")
+                logger.log(f"Installation of {additional_imports} succeeded!", 0)
 
         tool_codes = []
         for tool in tools:
@@ -73,7 +75,7 @@ class E2BExecutor:
         tool_definition_code += "\n\n".join(tool_codes)
 
         tool_definition_execution = self.run_code_raise_errors(tool_definition_code)
-        console.print(tool_definition_execution.logs)
+        self.logger.log(tool_definition_execution.logs)
 
     def run_code_raise_errors(self, code: str):
         execution = self.sbx.run_code(
@@ -108,7 +110,7 @@ locals().update({key: value for key, value in pickle_dict.items()})
 """
             execution = self.run_code_raise_errors(remote_unloading_code)
             execution_logs = "\n".join([str(log) for log in execution.logs.stdout])
-            console.print(execution_logs)
+            self.logger.log(execution_logs, 1)
 
         execution = self.run_code_raise_errors(code_action)
         execution_logs = "\n".join([str(log) for log in execution.logs.stdout])

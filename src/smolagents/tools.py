@@ -18,14 +18,15 @@ import ast
 import importlib
 import inspect
 import json
+import logging
 import os
 import sys
 import tempfile
-import torch
 import textwrap
 from functools import lru_cache, wraps
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Union, get_type_hints
+from typing import Callable, Dict, Optional, Union, get_type_hints
+
 from huggingface_hub import (
     create_repo,
     get_collection,
@@ -35,7 +36,7 @@ from huggingface_hub import (
 )
 from huggingface_hub.utils import RepositoryNotFoundError
 from packaging import version
-import logging
+from transformers.dynamic_module_utils import get_imports
 from transformers.utils import (
     TypeHintParsingException,
     cached_file,
@@ -45,23 +46,20 @@ from transformers.utils import (
 )
 from transformers.utils.chat_template_utils import _parse_type_hint
 
-from transformers.dynamic_module_utils import get_imports
-from transformers import AutoProcessor
-
+from .tool_validation import MethodChecker, validate_tool_attributes
 from .types import ImageType, handle_agent_input_types, handle_agent_output_types
 from .utils import instance_to_source
-from .tool_validation import validate_tool_attributes, MethodChecker
-
 
 logger = logging.getLogger(__name__)
 
+if is_accelerate_available():
+    from accelerate import PartialState
+    from accelerate.utils import send_to_device
 
 if is_torch_available():
-    pass
-
-if is_accelerate_available():
-    pass
-
+    from transformers import AutoProcessor
+else:
+    AutoProcessor = object
 
 TOOL_CONFIG_FILE = "tool_config.json"
 
@@ -84,18 +82,6 @@ def get_repo_type(repo_id, repo_type=None, **hub_kwargs):
             return "model"
     except Exception:
         return "space"
-
-
-def setup_default_tools():
-    default_tools = {}
-    main_module = importlib.import_module("smolagents")
-
-    for task_name, tool_class_name in TOOL_MAPPING.items():
-        tool_class = getattr(main_module, tool_class_name)
-        tool_instance = tool_class()
-        default_tools[tool_class.name] = tool_instance
-
-    return default_tools
 
 
 def validate_after_init(cls):
@@ -193,12 +179,12 @@ class Tool:
                     f"Attribute {attr} should have type {expected_type.__name__}, got {type(attr_value)} instead."
                 )
         for input_name, input_content in self.inputs.items():
-            assert isinstance(
-                input_content, dict
-            ), f"Input '{input_name}' should be a dictionary."
-            assert (
-                "type" in input_content and "description" in input_content
-            ), f"Input '{input_name}' should have keys 'type' and 'description', has only {list(input_content.keys())}."
+            assert isinstance(input_content, dict), (
+                f"Input '{input_name}' should be a dictionary."
+            )
+            assert "type" in input_content and "description" in input_content, (
+                f"Input '{input_name}' should have keys 'type' and 'description', has only {list(input_content.keys())}."
+            )
             if input_content["type"] not in AUTHORIZED_TYPES:
                 raise Exception(
                     f"Input '{input_name}': type '{input_content['type']}' is not an authorized value, should be one of {AUTHORIZED_TYPES}."
@@ -206,10 +192,10 @@ class Tool:
 
         assert getattr(self, "output_type", None) in AUTHORIZED_TYPES
 
-        # Validate forward function signature, except for PipelineTool
+        # Validate forward function signature, except for Tools that use a "generic" signature (PipelineTool, SpaceToolWrapper)
         if not (
-            hasattr(self, "is_pipeline_tool")
-            and getattr(self, "is_pipeline_tool") is True
+            hasattr(self, "skip_forward_signature_validation")
+            and getattr(self, "skip_forward_signature_validation") is True
         ):
             signature = inspect.signature(self.forward)
 
@@ -221,13 +207,13 @@ class Tool:
             json_schema = _convert_type_hints_to_json_schema(self.forward)
             for key, value in self.inputs.items():
                 if "nullable" in value:
-                    assert (
-                        key in json_schema and "nullable" in json_schema[key]
-                    ), f"Nullable argument '{key}' in inputs should have key 'nullable' set to True in function signature."
+                    assert key in json_schema and "nullable" in json_schema[key], (
+                        f"Nullable argument '{key}' in inputs should have key 'nullable' set to True in function signature."
+                    )
                 if key in json_schema and "nullable" in json_schema[key]:
-                    assert (
-                        "nullable" in value
-                    ), f"Nullable argument '{key}' in function signature should have key 'nullable' set to True in inputs."
+                    assert "nullable" in value, (
+                        f"Nullable argument '{key}' in function signature should have key 'nullable' set to True in inputs."
+                    )
 
     def forward(self, *args, **kwargs):
         return NotImplementedError("Write this method in your subclass of `Tool`.")
@@ -235,6 +221,16 @@ class Tool:
     def __call__(self, *args, sanitize_inputs_outputs: bool = False, **kwargs):
         if not self.is_initialized:
             self.setup()
+
+        # Handle the arguments might be passed as a single dictionary
+        if len(args) == 1 and len(kwargs) == 0 and isinstance(args[0], dict):
+            potential_kwargs = args[0]
+
+            # If the dictionary keys match our input parameters, convert it to kwargs
+            if all(key in self.inputs for key in potential_kwargs):
+                args = ()
+                kwargs = potential_kwargs
+
         if sanitize_inputs_outputs:
             args, kwargs = handle_agent_input_types(*args, **kwargs)
         outputs = self.forward(*args, **kwargs)
@@ -286,7 +282,7 @@ class Tool:
             class {class_name}(Tool):
                 name = "{self.name}"
                 description = "{self.description}"
-                inputs = {json.dumps(self.inputs, separators=(',', ':'))}
+                inputs = {json.dumps(self.inputs, separators=(",", ":"))}
                 output_type = "{self.output_type}"
             """).strip()
             import re
@@ -453,7 +449,9 @@ class Tool:
                 `cache_dir`, `revision`, `subfolder`) will be used when downloading the files for your tool, and the
                 others will be passed along to its init.
         """
-        assert trust_remote_code, "Loading a tool from Hub requires to trust remote code. Make sure you've inspected the repo and pass `trust_remote_code=True` to load the tool."
+        assert trust_remote_code, (
+            "Loading a tool from Hub requires to trust remote code. Make sure you've inspected the repo and pass `trust_remote_code=True` to load the tool."
+        )
 
         hub_kwargs_names = [
             "cache_dir",
@@ -536,7 +534,7 @@ class Tool:
             with open(module_path, "w") as f:
                 f.write(tool_code)
 
-            print("TOOLCODE:\n", tool_code)
+            print("TOOL CODE:\n", tool_code)
 
 
 ###
@@ -548,7 +546,7 @@ class Tool:
 
 
             # Load module from file path
-            spec = importlib.util.spec_from_file_location("custom_tool", module_path)
+            spec = importlib.util.spec_from_file_location("tool", module_path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
 
@@ -621,6 +619,8 @@ class Tool:
         from gradio_client import Client, handle_file
 
         class SpaceToolWrapper(Tool):
+            skip_forward_signature_validation = True
+
             def __init__(
                 self,
                 space_id: str,
@@ -640,7 +640,7 @@ class Tool:
                 if api_name is None:
                     api_name = list(space_description.keys())[0]
                     logger.warning(
-                        f"Since `api_name` was not defined, it was automatically set to the first avilable API: `{api_name}`."
+                        f"Since `api_name` was not defined, it was automatically set to the first available API: `{api_name}`."
                     )
                 self.api_name = api_name
 
@@ -678,10 +678,10 @@ class Tool:
                     arg.save(temp_file.name)
                     arg = temp_file.name
                 if (
-                    isinstance(arg, (str, Path))
-                    and Path(arg).exists()
-                    and Path(arg).is_file()
-                ) or is_http_url_like(arg):
+                    (isinstance(arg, str) and os.path.isfile(arg))
+                    or (isinstance(arg, Path) and arg.exists() and arg.is_file())
+                    or is_http_url_like(arg)
+                ):
                     arg = handle_file(arg)
                 return arg
 
@@ -772,10 +772,10 @@ def get_tool_description_with_args(
     if description_template is None:
         description_template = DEFAULT_TOOL_DESCRIPTION_TEMPLATE
     compiled_template = compile_jinja_template(description_template)
-    rendered = compiled_template.render(
+    tool_description = compiled_template.render(
         tool=tool,
     )
-    return rendered
+    return tool_description
 
 
 @lru_cache
@@ -824,8 +824,10 @@ def launch_gradio_demo(tool: Tool):
         "number": gr.Textbox,
     }
 
-    def fn(*args, **kwargs):
-        return tool(*args, **kwargs, sanitize_inputs_outputs=True)
+    def tool_forward(*args, **kwargs):
+        return tool(*args, sanitize_inputs_outputs=True, **kwargs)
+
+    tool_forward.__signature__ = inspect.signature(tool.forward)
 
     gradio_inputs = []
     for input_name, input_details in tool.inputs.items():
@@ -839,19 +841,14 @@ def launch_gradio_demo(tool: Tool):
     gradio_output = output_gradio_componentclass(label="Output")
 
     gr.Interface(
-        fn=fn,
+        fn=tool_forward,
         inputs=gradio_inputs,
         outputs=gradio_output,
         title=tool.name,
         article=tool.description,
+        description=tool.description,
+        api_name=tool.name,
     ).launch()
-
-
-TOOL_MAPPING = {
-    "python_interpreter": "PythonInterpreterTool",
-    "web_search": "DuckDuckGoSearchTool",
-    "transcriber": "SpeechToTextTool",
-}
 
 
 def load_tool(
@@ -862,7 +859,7 @@ def load_tool(
     **kwargs,
 ):
     """
-    Main function to quickly load a tool, be it on the Hub or in the Transformers library.
+    Main function to quickly load a tool from the Hub.
 
     <Tip warning={true}>
 
@@ -895,20 +892,13 @@ def load_tool(
             `cache_dir`, `revision`, `subfolder`) will be used when downloading the files for your tool, and the others
             will be passed along to its init.
     """
-    if task_or_repo_id in TOOL_MAPPING:
-        tool_class_name = TOOL_MAPPING[task_or_repo_id]
-        main_module = importlib.import_module("smolagents")
-        tools_module = main_module
-        tool_class = getattr(tools_module, tool_class_name)
-        return tool_class(token=token, **kwargs)
-    else:
-        return Tool.from_hub(
-            task_or_repo_id,
-            model_repo_id=model_repo_id,
-            token=token,
-            trust_remote_code=trust_remote_code,
-            **kwargs,
-        )
+    return Tool.from_hub(
+        task_or_repo_id,
+        model_repo_id=model_repo_id,
+        token=token,
+        trust_remote_code=trust_remote_code,
+        **kwargs,
+    )
 
 
 def add_description(description):
@@ -950,12 +940,17 @@ class ToolCollection:
     ```
     """
 
-    def __init__(self, collection_slug: str, token: Optional[str] = None, trust_remote_code=False):
+    def __init__(
+        self, collection_slug: str, token: Optional[str] = None, trust_remote_code=False
+    ):
         self._collection = get_collection(collection_slug, token=token)
         self._hub_repo_ids = {
             item.item_id for item in self._collection.items if item.item_type == "space"
         }
-        self.tools = {Tool.from_hub(repo_id,token,trust_remote_code) for repo_id in self._hub_repo_ids}
+        self.tools = {
+            Tool.from_hub(repo_id, token, trust_remote_code)
+            for repo_id in self._hub_repo_ids
+        }
 
 
 def tool(tool_function: Callable) -> Tool:
@@ -995,107 +990,6 @@ def tool(tool_function: Callable) -> Tool:
     new_signature = original_signature.replace(parameters=new_parameters)
     simple_tool.forward.__signature__ = new_signature
     return simple_tool
-
-
-HUGGINGFACE_DEFAULT_TOOLS = {}
-
-
-class Toolbox:
-    """
-    The toolbox contains all tools that the agent can perform operations with, as well as a few methods to
-    manage them.
-
-    Args:
-        tools (`List[Tool]`):
-            The list of tools to instantiate the toolbox with
-        add_base_tools (`bool`, defaults to `False`, *optional*, defaults to `False`):
-            Whether to add the tools available within `transformers` to the toolbox.
-    """
-
-    def __init__(self, tools: List[Tool], add_base_tools: bool = False):
-        self._tools = {tool.name: tool for tool in tools}
-        if add_base_tools:
-            self.add_base_tools()
-
-    def add_base_tools(self, add_python_interpreter: bool = False):
-        global HUGGINGFACE_DEFAULT_TOOLS
-        if len(HUGGINGFACE_DEFAULT_TOOLS.keys()) == 0:
-            HUGGINGFACE_DEFAULT_TOOLS = setup_default_tools()
-        for tool in HUGGINGFACE_DEFAULT_TOOLS.values():
-            if tool.name != "python_interpreter" or add_python_interpreter:
-                self.add_tool(tool)
-
-    @property
-    def tools(self) -> Dict[str, Tool]:
-        """Get all tools currently in the toolbox"""
-        return self._tools
-
-    def show_tool_descriptions(
-        self, tool_description_template: Optional[str] = None
-    ) -> str:
-        """
-        Returns the description of all tools in the toolbox
-
-        Args:
-            tool_description_template (`str`, *optional*):
-                The template to use to describe the tools. If not provided, the default template will be used.
-        """
-        return "\n".join(
-            [
-                get_tool_description_with_args(tool, tool_description_template)
-                for tool in self._tools.values()
-            ]
-        )
-
-    def add_tool(self, tool: Tool):
-        """
-        Adds a tool to the toolbox
-
-        Args:
-            tool (`Tool`):
-                The tool to add to the toolbox.
-        """
-        if tool.name in self._tools:
-            raise KeyError(f"Error: tool '{tool.name}' already exists in the toolbox.")
-        self._tools[tool.name] = tool
-
-    def remove_tool(self, tool_name: str):
-        """
-        Removes a tool from the toolbox
-
-        Args:
-            tool_name (`str`):
-                The tool to remove from the toolbox.
-        """
-        if tool_name not in self._tools:
-            raise KeyError(
-                f"Error: tool {tool_name} not found in toolbox for removal, should be instead one of {list(self._tools.keys())}."
-            )
-        del self._tools[tool_name]
-
-    def update_tool(self, tool: Tool):
-        """
-        Updates a tool in the toolbox according to its name.
-
-        Args:
-            tool (`Tool`):
-                The tool to update to the toolbox.
-        """
-        if tool.name not in self._tools:
-            raise KeyError(
-                f"Error: tool {tool.name} not found in toolbox for update, should be instead one of {list(self._tools.keys())}."
-            )
-        self._tools[tool.name] = tool
-
-    def clear_toolbox(self):
-        """Clears the toolbox"""
-        self._tools = {}
-
-    def __repr__(self):
-        toolbox_description = "Toolbox contents:\n"
-        for tool in self._tools.values():
-            toolbox_description += f"\t{tool.name}: {tool.description}\n"
-        return toolbox_description
 
 
 class PipelineTool(Tool):
@@ -1144,7 +1038,7 @@ class PipelineTool(Tool):
     name = "pipeline"
     inputs = {"prompt": str}
     output_type = str
-    is_pipeline_tool = True
+    skip_forward_signature_validation = True
 
     def __init__(
         self,
@@ -1189,8 +1083,6 @@ class PipelineTool(Tool):
         """
         Instantiates the `pre_processor`, `model` and `post_processor` if necessary.
         """
-        from accelerate import PartialState
-
         if isinstance(self.pre_processor, str):
             self.pre_processor = self.pre_processor_class.from_pretrained(
                 self.pre_processor, **self.hub_kwargs
@@ -1229,6 +1121,8 @@ class PipelineTool(Tool):
         """
         Sends the inputs through the `model`.
         """
+        import torch
+
         with torch.no_grad():
             return self.model(**inputs)
 
@@ -1239,15 +1133,14 @@ class PipelineTool(Tool):
         return self.post_processor(outputs)
 
     def __call__(self, *args, **kwargs):
+        import torch
+
         args, kwargs = handle_agent_input_types(*args, **kwargs)
 
         if not self.is_initialized:
             self.setup()
 
         encoded_inputs = self.encode(*args, **kwargs)
-
-        import torch
-        from accelerate.utils import send_to_device
 
         tensor_inputs = {
             k: v for k, v in encoded_inputs.items() if isinstance(v, torch.Tensor)
@@ -1270,6 +1163,5 @@ __all__ = [
     "tool",
     "load_tool",
     "launch_gradio_demo",
-    "Toolbox",
     "ToolCollection",
 ]

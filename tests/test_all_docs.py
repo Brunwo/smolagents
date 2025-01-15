@@ -17,12 +17,13 @@ import ast
 import os
 import re
 import shutil
-import tempfile
 import subprocess
+import tempfile
 import traceback
-import pytest
 from pathlib import Path
 from typing import List
+
+import pytest
 from dotenv import load_dotenv
 
 
@@ -91,7 +92,6 @@ class TestDocs:
             raise ValueError(f"Docs directory not found at {cls.docs_dir}")
 
         load_dotenv()
-        cls.hf_token = os.getenv("HF_TOKEN")
 
         cls.md_files = list(cls.docs_dir.rglob("*.md"))
         if not cls.md_files:
@@ -110,9 +110,12 @@ class TestDocs:
         code_blocks = self.extractor.extract_python_code(content)
         excluded_snippets = [
             "ToolCollection",
-            "image_generation_tool",
-            "from_langchain",
-            "while llm_should_continue(memory):",
+            "image_generation_tool",  # We don't want to run this expensive operation
+            "from_langchain",  # Langchain is not a dependency
+            "while llm_should_continue(memory):",  # This is pseudo code
+            "ollama_chat/llama3.2",  # Exclude ollama building in guided tour
+            "model = TransformersModel(model_id=model_id)",  # Exclude testing with transformers model
+            "SmolagentsInstrumentor",  # Exclude telemetry since it needs additional installs
         ]
         code_blocks = [
             block
@@ -129,10 +132,15 @@ class TestDocs:
             ast.parse(block)
 
         # Create and execute test script
+        print("\n\nCollected code block:==========\n".join(code_blocks))
         try:
             code_blocks = [
-                block.replace("<YOUR_HUGGINGFACEHUB_API_TOKEN>", self.hf_token).replace(
-                    "{your_username}", "m-ric"
+                (
+                    block.replace(
+                        "<YOUR_HUGGINGFACEHUB_API_TOKEN>", os.getenv("HF_TOKEN")
+                    )
+                    .replace("YOUR_ANTHROPIC_API_KEY", os.getenv("ANTHROPIC_API_KEY"))
+                    .replace("{your_username}", "m-ric")
                 )
                 for block in code_blocks
             ]

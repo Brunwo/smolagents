@@ -89,8 +89,8 @@ model_downloads_tool.push_to_hub("{your_username}/hf-model-downloads", token="<Y
 ```
 
 For the push to Hub to work, your tool will need to respect some rules:
-- All method are self-contained, e.g. use variables that come either from their args.
-- As per the above point, **all imports should be defined directky within the tool's functions**, else you will get an error when trying to call [`~Tool.save`] or [`~Tool.push_to_hub`] with your custom tool.
+- All methods are self-contained, e.g. use variables that come either from their args.
+- As per the above point, **all imports should be defined directly within the tool's functions**, else you will get an error when trying to call [`~Tool.save`] or [`~Tool.push_to_hub`] with your custom tool.
 - If you subclass the `__init__` method, you can give it no other argument than `self`. This is because arguments set during a specific tool instance's initialization are hard to track, which prevents from sharing them properly to the hub. And anyway, the idea of making a specific class is that you can already set class attributes for anything you need to hard-code (just set `your_variable=(...)` directly under the `class YourTool(Tool):` line). And of course you can still create a class attribute anywhere in your code by assigning stuff to `self.your_variable`.
 
 
@@ -177,7 +177,7 @@ agent.run("How many more blocks (also denoted as layers) are in BERT base encode
 
 ### Manage your agent's toolbox
 
-You can manage an agent's toolbox by adding or replacing a tool.
+You can manage an agent's toolbox by adding or replacing a tool in attribute `agent.tools`, since it is a standard dictionary.
 
 Let's add the `model_download_tool` to an existing agent initialized with only the default toolbox.
 
@@ -187,7 +187,7 @@ from smolagents import HfApiModel
 model = HfApiModel("Qwen/Qwen2.5-Coder-32B-Instruct")
 
 agent = CodeAgent(tools=[], model=model, add_base_tools=True)
-agent.toolbox.add_tool(model_download_tool)
+agent.tools[model_download_tool.name] = model_download_tool
 ```
 Now we can leverage the new tool:
 
@@ -202,18 +202,13 @@ agent.run(
 > Beware of not adding too many tools to an agent: this can overwhelm weaker LLM engines.
 
 
-Use the `agent.toolbox.update_tool()` method to replace an existing tool in the agent's toolbox.
-This is useful if your new tool is a one-to-one replacement of the existing tool because the agent already knows how to perform that specific task.
-Just make sure the new tool follows the same API as the replaced tool or adapt the system prompt template to ensure all examples using the replaced tool are updated.
-
-
 ### Use a collection of tools
 
-You can leverage tool collections by using the ToolCollection object, with the slug of the collection you want to use.
-Then pass them as a list to initialize you agent, and start using them!
+You can leverage tool collections by using the `ToolCollection` object, with the slug of the collection you want to use.
+Then pass them as a list to initialize your agent, and start using them!
 
 ```py
-from transformers import ToolCollection, CodeAgent
+from smolagents import ToolCollection, CodeAgent
 
 image_tool_collection = ToolCollection(
     collection_slug="huggingface-tools/diffusion-tools-6630bb19a942c2306a2cdb6f",
