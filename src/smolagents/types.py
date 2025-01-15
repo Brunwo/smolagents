@@ -21,7 +21,7 @@ import requests
 import numpy as np
 
 from transformers.utils import (
-    is_soundfile_availble,
+    is_soundfile_available,
     is_torch_available,
     is_vision_available,
 )
@@ -42,7 +42,7 @@ if is_torch_available():
 else:
     Tensor = object
 
-if is_soundfile_availble():
+if is_soundfile_available():
     import soundfile as sf
 
 
