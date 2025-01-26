@@ -33,6 +33,7 @@ load_dotenv()
 
 class E2BExecutor:
     def __init__(self, additional_imports: List[str], tools: List[Tool], logger):
+        print("Initializing E2BExecutor...")
         self.custom_tools = {}
         self.sbx = Sandbox()  # "qywp2ctmu2q7jzprcf4j")
         # TODO: validate installing agents package or not

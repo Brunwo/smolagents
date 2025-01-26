@@ -296,6 +296,7 @@ def create_function(
 
         return result
 
+    print("Created function:", func_def.name)
     return new_func
 
 
@@ -698,6 +699,7 @@ def evaluate_subscript(
         subscript.value, state, static_tools, custom_tools, authorized_imports
     )
 
+    print(f"subscript: {subscript}, index: {index}, value: {value}")
     if isinstance(value, str) and isinstance(index, str):
         raise InterpreterError(
             "You're trying to subscript a string with a string index, which is impossible"
@@ -1449,6 +1451,7 @@ def evaluate_python_code(
 
 class LocalPythonInterpreter:
     def __init__(self, additional_authorized_imports: List[str], tools: Dict):
+        print("Initializing LocalPythonInterpreter...")
         self.custom_tools = {}
         self.state = {}
         self.additional_authorized_imports = additional_authorized_imports
