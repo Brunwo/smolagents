@@ -67,7 +67,7 @@ def get_weather_report_at_coordinates(coordinates, date_time):
     # Dummy function, returns a list of [temperature in °C, risk of rain on a scale 0-1, wave height in m]
     return [28.0, 0.35, 0.85]
 
-def get_coordinates_from_location(location):
+def convert_location_to_coordinates(location):
     # Returns dummy coordinates
     return [3.3, -42.0]
 
@@ -273,7 +273,7 @@ image_generation_tool = load_tool("m-ric/text-to-image", trust_remote_code=True)
 search_tool = DuckDuckGoSearchTool()
 
 agent = CodeAgent(
-    tools=[search_tool],
+    tools=[search_tool, image_generation_tool],
     model=HfApiModel("Qwen/Qwen2.5-72B-Instruct"),
     planning_interval=3 # This is where you activate planning!
 )
